@@ -1,0 +1,11 @@
+train: T2/train/images
+val: T2/val/images
+test: T2/test/images
+
+# Classes
+nc: 16
+names: ['aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car', 'cat', 'chair', 'cow', 'diningtable', 'dog', 'horse',
+'motorbike', 'person', 'pottedplant']
+
+# names: ['aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car', 'cat', 'chair', 'cow', 'diningtable', 'dog', 'horse',
+# 'motorbike', 'person', 'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor']

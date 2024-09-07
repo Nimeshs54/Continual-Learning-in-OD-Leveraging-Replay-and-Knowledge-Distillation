@@ -1,0 +1,3 @@
+python train.py --device 0 --img 640 --batch 4 --epochs 100 --data data/VOC2007.yaml --weights yolov5s.pt --name voc_train
+
+python val.py --weights runs/train/voc_train/weights/best.pt --data data/VOC2007.yaml --task 'test' --name voc_test

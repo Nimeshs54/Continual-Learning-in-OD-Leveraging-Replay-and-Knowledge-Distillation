@@ -27,7 +27,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 try:
-    import comet_ml
+    import comet_ml  # must be imported before torch (if installed)
 except ImportError:
     comet_ml = None
 
@@ -60,7 +60,7 @@ from utils.general import (LOGGER, TQDM_BAR_FORMAT, check_amp, check_dataset, ch
                            yaml_save)
 from utils.loggers import Loggers
 from utils.loggers.comet.comet_utils import check_comet_resume
-from utils.loss import ComputeLoss
+from utils.loss import ComputeLoss, compute_distillation_output_loss
 from utils.metrics import fitness
 from utils.plots import plot_evolve
 from utils.torch_utils import (EarlyStopping, ModelEMA, de_parallel, select_device, smart_DDP, smart_optimizer,
@@ -136,6 +136,16 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     else:
         model = Model(cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
     amp = check_amp(model)  # check AMP
+
+
+    if opt.distill:
+        print("load t-model from", opt.t_weights)
+        t_model = torch.load(opt.t_weights, map_location=torch.device('cpu'))
+        if t_model.get("model", None) is not None:
+            t_model = t_model["model"]
+        t_model.to(device)
+        t_model.float()
+        t_model.train()
 
     # Freeze
     freeze = [f'model.{x}.' for x in (freeze if len(freeze) > 1 else range(freeze[0]))]  # layers to freeze
@@ -281,10 +291,11 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         # dataset.mosaic_border = [b - imgsz, -b]  # height, width borders
 
         mloss = torch.zeros(3, device=device)  # mean losses
+        mdloss = torch.zeros(1, device=device)
         if RANK != -1:
             train_loader.sampler.set_epoch(epoch)
         pbar = enumerate(train_loader)
-        LOGGER.info(('\n' + '%11s' * 7) % ('Epoch', 'GPU_mem', 'box_loss', 'obj_loss', 'cls_loss', 'Instances', 'Size'))
+        LOGGER.info(('\n' + '%11s' * 8) % ('Epoch', 'GPU_mem', 'box_loss', 'obj_loss', 'cls_loss', 'dist', 'Instances', 'Size'))
         if RANK in {-1, 0}:
             pbar = tqdm(pbar, total=nb, bar_format=TQDM_BAR_FORMAT)  # progress bar
         optimizer.zero_grad()
@@ -315,7 +326,17 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             # Forward
             with torch.cuda.amp.autocast(amp):
                 pred = model(imgs)  # forward
+                if opt.distill:
+                    with torch.no_grad():
+                        t_pred = t_model(imgs)
                 loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+                # distillation
+                if opt.distill:
+                    dloss = compute_distillation_output_loss(pred, t_pred, model, opt.dist_loss, opt.temperature)
+                else:
+                    dloss = 0
+                loss += dloss
+                loss_items[-1] = loss
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
                 if opt.quad:
@@ -338,9 +359,10 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             # Log
             if RANK in {-1, 0}:
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
+                mdloss = (mdloss * i + dloss) / (i + 1)
                 mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
-                pbar.set_description(('%11s' * 2 + '%11.4g' * 5) %
-                                     (f'{epoch}/{epochs - 1}', mem, *mloss, targets.shape[0], imgs.shape[-1]))
+                pbar.set_description(('%11s' * 2 + '%11.4g' * 6) %
+                                     (f'{epoch}/{epochs - 1}', mem, *mloss, mdloss, targets.shape[0], imgs.shape[-1]))
                 callbacks.run('on_train_batch_end', model, ni, imgs, targets, paths, list(mloss))
                 if callbacks.stop_training:
                     return
@@ -442,6 +464,10 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 def parse_opt(known=False):
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', type=str, default=ROOT / 'yolov5s.pt', help='initial weights path')
+    parser.add_argument('--distill', action='store_true', help='cache images for faster training')
+    parser.add_argument('--t_weights', type=str, default='yolov5l.pt', help='initial tweights path')
+    parser.add_argument('--dist_loss', type=str, default='l2', help='using kl/l2 loss in distillation')
+    parser.add_argument('--temperature', type=int, default=5, help='temperature in distilling training')
     parser.add_argument('--cfg', type=str, default='', help='model.yaml path')
     parser.add_argument('--data', type=str, default=ROOT / 'data/coco128.yaml', help='dataset.yaml path')
     parser.add_argument('--hyp', type=str, default=ROOT / 'data/hyps/hyp.scratch-low.yaml', help='hyperparameters path')

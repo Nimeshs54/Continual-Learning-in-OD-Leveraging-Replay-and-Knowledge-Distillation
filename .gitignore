@@ -34,6 +34,25 @@ data/images/*
 !data/images/zidane.jpg
 !data/images/bus.jpg
 !data/*.sh
+.cometml-runs/
+T1/
+T2/
+T2_CF/
+T3/
+T3_CF/
+T4/
+T4_CF/
+T5/
+T5_CF/
+T6/
+T6_CF/
+T6_old/
+KD-VOC/
+KG-M2/
+SynData/
+VOC2007_TrainVal/
+bunddel/
+bunddel_test/
 
 results*.csv
 
